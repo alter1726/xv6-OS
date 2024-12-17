@@ -15,14 +15,14 @@ int main(int argc,char **argv){
         //父进程从子进程读取一个字符
         char buf;
         read(psf[0],&buf,1);
-        printf("%d: receive pong\n",getpid());
+        printf("%d: received pong\n",getpid());
         wait(0);
     }else
     {
         //子进程从父进程读取一个字符
         char buf;
         read(pfs[0],&buf,1);
-        printf("%d: recieved ping\n",getpid());
+        printf("%d: received ping\n",getpid());
 
         //子进程向父进程发送一个字符
         write(psf[1],&buf,1);
