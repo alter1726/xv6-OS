@@ -132,3 +132,18 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+void ycz_backtrace(){
+  //读取当前栈帧指针
+  uint64 fp=r_fp();
+  printf("backtrace:\n");
+  
+  //判断当前的fp是否被分配了一个页面来终止循环
+  while (PGROUNDDOWN(fp)!=PGROUNDUP(fp))
+  {
+    //返回地址保存在fp-8偏移位置
+    uint64 ra =*(uint64*)(fp-8);
+    printf("%p\n",ra);
+    fp=*(uint64*)(fp-16);//前一个栈帧指针保存在fp-16偏移位置
+  }
+}
