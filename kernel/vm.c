@@ -15,14 +15,7 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
-/*
- * create a direct-map page table for the kernel.
- */
-void
-kvminit()
-{
-  kernel_pagetable = ycz_kvminit_newpgtbl();
-}
+
 
 //将各种内核需要的直接映射添加到页表pgtbl中
 void ycz_kvm_map_pgtbl(pagetable_t pgtbl){
@@ -32,8 +25,8 @@ void ycz_kvm_map_pgtbl(pagetable_t pgtbl){
   // virtio mmio disk interface
   kvmmap(pgtbl,VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
-  // CLINT
-  kvmmap(pgtbl,CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  // CLINT   仅在内核启动的时候需要使用到，而用户进程在内核态中的操作并不需要使用该映射，并且该映射会与要map的程序内存冲突
+  // kvmmap(pgtbl,CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
   kvmmap(pgtbl,PLIC, PLIC, 0x400000, PTE_R | PTE_W);
@@ -56,6 +49,19 @@ ycz_kvminit_newpgtbl(){
   ycz_kvm_map_pgtbl(pgtbl);
   return pgtbl;
 }
+
+/*
+ * create a direct-map page table for the kernel.
+ */
+void
+kvminit()
+{
+  kernel_pagetable = ycz_kvminit_newpgtbl();
+
+  //全局内核页表仍然需要映射CLINT
+  kvmmap(kernel_pagetable,CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+}
+
 
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
@@ -391,23 +397,25 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  // uint64 n, va0, pa0;
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  //   len -= n;
+  //   dst += n;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // return 0;
+
+  return copyin_new(pagetable,dst,srcva,len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -417,40 +425,41 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
 
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
+  return copyinstr_new(pagetable,dst,srcva,max);
 }
 
 //递归打印页表
@@ -481,4 +490,47 @@ int
 ycz_vmprint(pagetable_t pagetable){
   printf("page table %p\n",pagetable);
   return ycz_pgtblprint(pagetable,0);
+}
+
+//将源页表的一部分页映射关系拷贝到目标页表中，只拷贝页表项，不拷贝实际的物理内存
+int
+ycz_kvmcopymaps(pagetable_t src,pagetable_t dst,uint64 begin,uint64 sz){
+  pte_t* pte;
+  uint64 pa,i;
+  uint flags;
+
+  //PGROUNDUP  将地址向上取整到页边界，防止重新映射已经映射的页，特别是在执行growproc操作时
+  for (i = PGROUNDUP(begin); i < begin+sz; i+=PGSIZE)
+  {
+    if((pte=walk(src,i,0))==0)
+      panic("kvmcopymaps: pte should exit");
+    if((*pte&PTE_V)==0)
+      panic("kvmcopymaps: page not present");
+    pa=PTE2PA(*pte);
+
+    //&~PTE_U 表示将该页的权限设置为非用户页，RISC-V中内核无法直接访问用户
+    flags=(PTE_FLAGS(*pte)) & (~PTE_U);
+    if(mappages(dst,i,PGSIZE,pa,flags)!=0)
+      goto err;
+  }
+  return 0;
+err:
+  //解除目标页表中已经映射的页表项
+  uvmunmap(dst,PGROUNDUP(begin),(i-PGROUNDUP(begin))/PGSIZE,0);
+  return -1;
+}
+
+//与uvmdealloc功能类似，将程序内存从oldsz缩减到newsz，但不释放实际内存
+uint64
+ycz_kvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+  }
+
+  return newsz;
 }

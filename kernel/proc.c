@@ -129,7 +129,8 @@ found:
   char *pa = kalloc();
   if(pa == 0)
     panic("kalloc");
-  uint64 va = KSTACK((int) (p - proc));   //将内核栈映射到固定的逻辑地址上
+  // uint64 va = KSTACK((int) (p - proc));   //将内核栈映射到固定的逻辑地址上
+  uint64 va=KSTACK((int)0);
   kvmmap(p->ycz_kernelpgtbl,va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
   p->kstack = va;   //记录内核栈的虚拟地址
 
@@ -258,6 +259,8 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  ycz_kvmcopymaps(p->pagetable,p->ycz_kernelpgtbl,0,p->sz);//同步程序内存映射到进程内核页表中
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -280,11 +283,21 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    uint64 newsz;
+    if((newsz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+
+    //内核页表中的映射同步扩大
+    if(ycz_kvmcopymaps(p->pagetable,p->ycz_kernelpgtbl,sz,n)!=0){
+      uvmdealloc(p->pagetable,newsz,sz);
+      return -1;
+    }
+    sz=newsz;
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uvmdealloc(p->pagetable, sz, sz + n);
+    //内核页表中的映射同步缩小
+    sz=ycz_kvmdealloc(p->ycz_kernelpgtbl,sz,sz+n);
   }
   p->sz = sz;
   return 0;
@@ -305,7 +318,9 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  //加入调用ycz_kvmcopymaps，将新进程用户页表映射拷贝一份到新进程内核页表中
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0||
+    ycz_kvmcopymaps(np->pagetable,np->ycz_kernelpgtbl,0,p->sz)<0){
     freeproc(np);
     release(&np->lock);
     return -1;
