@@ -146,6 +146,8 @@ void            trapinit(void);
 void            trapinithart(void);
 extern struct spinlock tickslock;
 void            usertrapret(void);
+uint64          ycz_sigalarm(int,void(*handler)());
+uint64          ycz_sigreturn();
 
 // uart.c
 void            uartinit(void);
