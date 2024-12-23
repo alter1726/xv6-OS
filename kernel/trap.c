@@ -67,11 +67,16 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
-  }
+  } else{
+    uint64 va=r_stval();    //获取引发缺页异常惰性分配的虚拟地址
+    if((r_scause()==13||r_scause()==15)&&ycz_uvmshouldallocate(va)) {//缺页异常,异常地址发生过惰性分配
+      ycz_uvmlazyallocate(va);                 //分配的物理内存，在页表创建映射
+    }else {//不是缺页异常，或是在非惰性分配的地址上发生缺页异常，则抛出错误并杀死进程
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
+  } 
 
   if(p->killed)
     exit(-1);
