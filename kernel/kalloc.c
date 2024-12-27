@@ -21,13 +21,28 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmem[NCPU];           //每个CPU分配一个freelist，多个CPU并发分配物理内存不会相互竞争
+
+char *kmem_lock_names[]={
+    "kmem_cpu_0",
+    "kmem_cpu_1",
+    "kmem_cpu_2",
+    "kmem_cpu_3",
+    "kmem_cpu_4",
+    "kmem_cpu_5",
+    "kmem_cpu_6",
+    "kmem_cpu_7",
+};
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  for (int i = 0; i < NCPU; i++)
+  { 
+    //初始化所有锁
+    initlock(&kmem[i].lock, kmem_lock_names[i]);
+  }
+  freerange(end, (void*)PHYSTOP); 
 }
 
 void
@@ -56,10 +71,15 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off(); //关闭中断
+  int cpu=cpuid();
+
+  acquire(&kmem[cpu].lock);
+  r->next = kmem[cpu].freelist;
+  kmem[cpu].freelist = r;
+  release(&kmem[cpu].lock);
+
+  pop_off();  //开中断
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,12 +90,50 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  push_off();
+  
+  int cpu=cpuid();
 
+  acquire(&kmem[cpu].lock);
+
+  if (!kmem[cpu].freelist)
+  {                                         //当前CPU空闲列表为空时，去其他CPU偷内存
+    int steal_pages=64;                      //偷64个内存页
+    for (int i = 0; i < NCPU; i++)  
+    { 
+      if(i==cpu)  
+        continue;                           //跳过当前CPU
+      
+      acquire(&kmem[i].lock);
+      if (!kmem[i].freelist)
+      {
+        release(&kmem[i].lock);             //想偷页的CPU空闲列表也为空，则释放锁
+        continue;
+      }
+
+      struct run* sr=kmem[i].freelist;
+      while (sr&&steal_pages)               //循环将kmem[i]的空闲列表移动到kmem[cpu]中
+      {
+        kmem[i].freelist=sr->next;
+        sr->next=kmem[cpu].freelist;
+        kmem[cpu].freelist=sr;
+        sr=kmem[i].freelist;
+        steal_pages--;
+      }
+
+      release(&kmem[i].lock);
+
+      if(steal_pages==0)                    //偷到64页后退出循环
+        break;
+    }
+  }
+  
+  r = kmem[cpu].freelist;
+  if(r)
+    kmem[cpu].freelist = r->next;
+  release(&kmem[cpu].lock);
+
+  pop_off();
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
