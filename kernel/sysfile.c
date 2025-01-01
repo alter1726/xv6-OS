@@ -304,11 +304,33 @@ sys_open(void)
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
+    int symlink_layer=0;
+    while (1)
+    {                                                     //循环调用namei从而获取对应的inode
+      if((ip = namei(path)) == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if (ip->type==T_SYMLINK&&(omode&O_NOFOLLOW)==0)     //指向符号链接，继续循环
+      {
+        if (++symlink_layer>10)                           //符号链接超过10层，退出
+        {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        if (readi(ip,0,(uint64)path,0,MAXPATH)<0)         //读取链接的目标路径
+        {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        iunlockput(ip);
+      }else
+        break;
     }
-    ilock(ip);
+    
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -482,5 +504,32 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void){
+  struct inode* ip;
+  char target[MAXPATH],path[MAXPATH];
+  if(argstr(0,target,MAXPATH)<0||argstr(1,path,MAXPATH)<0)
+    return -1;
+  
+  begin_op();
+
+  ip=create(path,T_SYMLINK,0,0);                          //创建一个符号链接类型的inode，指向path文件
+  if(ip==0){
+    end_op();
+    return -1;
+  }
+
+  if (writei(ip,0,(uint64)target,0,strlen(target))<0)     //将符合链接的目标路径target写入inode数据块中
+  {
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+
   return 0;
 }
