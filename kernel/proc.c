@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -134,6 +135,9 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  //初始化进程时，需要初始化一个进程的vmas数组
+  memset(&p->vmas,0,sizeof(p->vmas));
+
   return p;
 }
 
@@ -146,6 +150,11 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  for (int i = 0; i < NVMA; i++)        //释放页表前把vmas数组清空
+  {
+    struct ycz_vma* v=&p->vmas[i];
+    vma_unmap(p->pagetable,v->vastart,v->sz,v);
+  }
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -295,6 +304,16 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+
+  // 父进程vmas复制到子进程中，实际内存页和pte不会被复制
+  for (int i = 0; i < NVMA; i++)
+  {
+    struct ycz_vma* v = &p->vmas[i];
+    if(v->valid){
+      np->vmas[i]=*v;
+      filedup(v->f);
+    }
+  }
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
